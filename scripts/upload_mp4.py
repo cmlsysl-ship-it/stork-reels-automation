@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -74,6 +75,37 @@ def github(method: str, path: str, token: str, payload=None):
         raise RuntimeError(f"GitHub API {method} {path}: HTTP {exc.code} - {message}") from None
 
 
+def verify_public_bytes(url: str, payload: bytes, attempts: int = 5) -> None:
+    """Require an anonymous public download of exactly the source MP4 bytes.
+
+    Buffer and Instagram access URLs without our GitHub bearer token, so a
+    successful authenticated GitHub commit is not sufficient evidence.
+    """
+    expected_hash = hashlib.sha256(payload).hexdigest()
+    last_error = "unknown"
+    for attempt in range(attempts):
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "stork-reels-public-verify",
+                              "Accept": "*/*", "Cache-Control": "no-cache"})
+            with urllib.request.urlopen(req, timeout=60) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"unexpected HTTP status {response.status}")
+                public_bytes = response.read(len(payload) + 1)
+            if len(public_bytes) != len(payload):
+                raise RuntimeError("public MP4 byte size does not match local file")
+            if hashlib.sha256(public_bytes).hexdigest() != expected_hash:
+                raise RuntimeError("public MP4 SHA-256 does not match local file")
+            if public_bytes[4:8] != b"ftyp":
+                raise RuntimeError("public file is not MP4")
+            return
+        except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
+            last_error = str(exc)
+            if attempt + 1 < attempts:
+                time.sleep(min(2 ** attempt, 12))
+    raise RuntimeError(f"Public GitHub download verification failed: {last_error}")
+
+
 def upload(path: Path, token: str, slot: str) -> dict:
     verified = verify_mp4(path)
     payload = path.read_bytes()
@@ -99,6 +131,7 @@ def upload(path: Path, token: str, slot: str) -> dict:
     url = check.get("download_url")
     if not url or not url.startswith(f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/"):
         raise RuntimeError("GitHub did not return the expected public raw-file URL")
+    verify_public_bytes(url, payload)
     return {"url": url, "repository_path": relative, "sha256": sha256,
             "git_blob_sha1": blob_sha, **verified, "status": "stored_verified"}
 
