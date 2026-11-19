@@ -136,6 +136,23 @@ def upload(path: Path, token: str, slot: str) -> dict:
             "git_blob_sha1": blob_sha, **verified, "status": "stored_verified"}
 
 
+def resolve_github_token() -> str | None:
+    """Reuse an existing authorized token or GitHub CLI login, never log it."""
+    for name in ("STORK_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+        token = os.getenv(name)
+        if token:
+            return token
+    try:
+        completed = subprocess.run(
+            ["gh", "auth", "token"], capture_output=True, text=True,
+            timeout=8, check=False)
+        if completed.returncode == 0 and completed.stdout.strip():
+            return completed.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description="Store already-created MP4 to GitHub")
     ap.add_argument("file", type=Path, help="Locally rendered H.264 MP4 file")
@@ -143,9 +160,9 @@ def main():
     args = ap.parse_args()
     if not args.file.is_file():
         ap.error("MP4 file not found")
-    token = os.getenv("STORK_GITHUB_TOKEN")
+    token = resolve_github_token()
     if not token:
-        ap.error("STORK_GITHUB_TOKEN not set; configure as a secret in the video-producing environment")
+        ap.error("No usable GitHub token: configure a secure STORK_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN or authenticate GitHub CLI (gh auth login) in the same MP4-producing environment")
     try:
         print(json.dumps(upload(args.file, token, args.slot), ensure_ascii=False))
     except (ValueError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
